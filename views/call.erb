@@ -1,0 +1,136 @@
+<html>
+  <head>
+  </head>
+  <body>
+    <video id='localVideo' autoplay muted></video>
+    <video id='remoteVideo' autoplay muted></video>
+    <button id='callButton'>Call</button>
+    <button id='hangupButton'>Hangup</button>
+
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1.9.1/jquery.min.js"></script>
+    <script src="//cdn.temasys.com.sg/adapterjs/0.10.x/adapter.debug.js"></script>
+    <script>
+      $(document).ready( start);
+
+      var localStream, peerConnection;
+
+      var localVideo = document.getElementById('localVideo');
+      var remoteVideo = document.getElementById('remoteVideo');
+
+      var callButton = document.getElementById("callButton");
+      var hangupButton = document.getElementById("hangupButton");
+      callButton.disabled = true;
+      hangupButton.disabled = true;
+      callButton.onclick = call;
+      hangupButton.onclick = hangup;
+
+      var host = "<%= @websocket_url %>";
+      var signalingChannel = new WebSocket(host)
+
+      function trace(text) {
+        console.log((performance.now() / 1000).toFixed(3) + ": " + text);
+      }
+
+      function start() {
+        trace("Requesting local stream");
+        navigator.getUserMedia({audio:true, video:true}, gotStream,
+          function(error) {
+            trace("getUserMedia error: ", error);
+          });
+      }
+
+      function gotStream(stream){
+        trace("Received local stream");
+        localVideo.src = URL.createObjectURL(stream);
+        localStream = stream;
+        callButton.disabled = false;
+      }
+
+      function call() {
+        callButton.disabled = true;
+        hangupButton.disabled = false;
+        trace("Starting call");
+
+        if (localStream.getVideoTracks().length > 0) {
+          trace('Using video device: ' + localStream.getVideoTracks()[0].label);
+        }
+        if (localStream.getAudioTracks().length > 0) {
+          trace('Using audio device: ' + localStream.getAudioTracks()[0].label);
+        }
+
+        var servers = {
+          'iceServers': [{
+            'url': 'stun:stun.example.org'
+          }]
+        };
+
+        peerConnection = new RTCPeerConnection(servers);
+        trace("Created local peer connection object localPeerConnection");
+        peerConnection.onicecandidate = gotLocalIceCandidate;
+
+        peerConnection.onaddstream = gotRemoteStream;
+        peerConnection.addStream(localStream);
+        trace("Added localStream to localPeerConnection");
+        peerConnection.createOffer(gotLocalDescription,handleError);
+      }
+
+      function gotLocalDescription(description){
+        peerConnection.setLocalDescription(description, function() {
+              signalingChannel.send(JSON.stringify({
+                    'sdp': peerConnection.localDescription
+                  }));
+              }, handleError);
+        trace("Offer from localPeerConnection: \n" + description.sdp);
+      }
+
+      function gotRemoteDescription(description){
+        trace("Answer from remotePeerConnection: \n" + description.sdp);
+        peerConnection.setRemoteDescription(new RTCSessionDescription(description.sdp));
+      }
+
+      function hangup() {
+        trace("Ending call");
+        peerConnection.close();
+        localVideo.src = null;
+        peerConnection = null;
+        hangupButton.disabled = true;
+        callButton.disabled = false;
+      }
+
+      function gotRemoteStream(event){
+        remoteVideo.src = URL.createObjectURL(event.stream);
+        trace("Received remote stream");
+      }
+
+      function gotLocalIceCandidate(event){
+        if (event.candidate) {
+          trace("Local ICE candidate: \n" + event.candidate.candidate);
+          signalingChannel.send(JSON.stringify({
+                'candidate': event.candidate
+              }));
+        }
+      }
+
+      function gotRemoteIceCandidate(event){
+        if (event.candidate) {
+          peerConnection.addIceCandidate(new RTCIceCandidate(event.candidate));
+          trace("Remote ICE candidate: \n " + event.candidate.candidate);
+        }
+      }
+
+      function handleError(error){
+        console.log(error.name + ': ' + error.message);
+      }
+
+    signalingChannel.onmessage = function (event) {
+      var message = JSON.parse(event.data);
+      if (message.sdp) {
+        gotRemoteDescription(message);
+      } else {
+        gotRemoteIceCandidate(message);
+      }
+    }
+    </script>
+  </body>
+</html>
+
